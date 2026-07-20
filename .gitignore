@@ -1,0 +1,19 @@
+# Временные файлы Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+
+# Переменные окружения (конфиденциально)
+.env
+
+# Временная папка со скачанными файлами
+downloads/
+
+# Папки сборки PyInstaller
+dist/
+build/
+*.spec
