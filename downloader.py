@@ -1,3 +1,4 @@
+import shutil
 # -*- coding: utf-8 -*-
 import asyncio
 import uuid
@@ -14,7 +15,7 @@ def _sync_download(url: str, unique_id: str) -> dict:
     Синхронная функция скачивания аудио через yt-dlp.
     Должна запускаться в отдельном потоке (executor).
     """
-    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg_path = shutil.which('ffmpeg') or imageio_ffmpeg.get_ffmpeg_exe()
     
     # Шаблон названия файла: downloads/<uuid>_%(title)s.%(ext)s
     # UUID нужен для избежания конфликтов при одновременных запросах
@@ -27,7 +28,7 @@ def _sync_download(url: str, unique_id: str) -> dict:
         'noplaylist': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['default', '-android_sdkless']
+                'player_client': ['ios', 'android', 'mweb', 'web_creator']
             }
         },
         'postprocessors': [{
@@ -86,7 +87,7 @@ def download_audio_gui(url: str, output_path: str) -> dict:
     Синхронная функция скачивания аудио для GUI-приложения.
     Сохраняет файл с чистым именем (без UUID) в указанную пользователем папку.
     """
-    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg_path = shutil.which('ffmpeg') or imageio_ffmpeg.get_ffmpeg_exe()
     
     # Чтобы избежать конфликтов при переименовании, используем временный префикс во время скачивания,
     # а затем переименовываем в чистое имя.
@@ -101,7 +102,7 @@ def download_audio_gui(url: str, output_path: str) -> dict:
         'noplaylist': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['default', '-android_sdkless']
+                'player_client': ['ios', 'android', 'mweb', 'web_creator']
             }
         },
         'postprocessors': [{
