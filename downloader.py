@@ -21,7 +21,7 @@ def _get_ydl_opts(outtmpl: str) -> dict:
         'noplaylist': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'android', 'ios', 'web']
+                'player_client': ['mweb', 'android', 'ios', 'web', 'tv']
             }
         },
         'postprocessors': [{
@@ -29,24 +29,32 @@ def _get_ydl_opts(outtmpl: str) -> dict:
             'preferredcodec': 'mp3',
             'preferredquality': '320',
         }],
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False,
+        'no_warnings': False,
     }
     
-    render_secret = Path("/etc/secrets") / config.COOKIES_FILE_NAME
-    if render_secret.exists():
+    # Проверяем /etc/secrets еще раз на всякий случай перед скачиванием
+    secret_dir = Path("/etc/secrets")
+    secret_file = None
+    if secret_dir.exists():
+        for f in secret_dir.glob("*"):
+            if f.is_file():
+                secret_file = f
+                break
+
+    if secret_file and secret_file.exists():
         try:
-            shutil.copy(render_secret, config.WRITABLE_COOKIES_PATH)
+            shutil.copy(secret_file, config.WRITABLE_COOKIES_PATH)
             ydl_opts['cookiefile'] = str(config.WRITABLE_COOKIES_PATH)
-            logger.info(f"Используем скопированные cookies из {config.WRITABLE_COOKIES_PATH}")
+            logger.info(f"Используем куки из секретного файла {secret_file} -> {config.WRITABLE_COOKIES_PATH}")
         except Exception as e:
-            logger.error(f"Ошибка копирования cookies: {e}")
-            ydl_opts['cookiefile'] = str(render_secret)
+            logger.error(f"Ошибка копирования секретных куки: {e}")
+            ydl_opts['cookiefile'] = str(secret_file)
     elif config.COOKIES_PATH.exists():
         ydl_opts['cookiefile'] = str(config.COOKIES_PATH)
-        logger.info(f"Используем cookies из файла: {config.COOKIES_PATH}")
+        logger.info(f"Используем куки из файла: {config.COOKIES_PATH}")
     else:
-        logger.warning("Файл cookies.txt не найден.")
+        logger.warning("⚠️ ВНИМАНИЕ: Файл куки отсутствует. YouTube может заблокировать скачивание.")
         
     return ydl_opts
 
