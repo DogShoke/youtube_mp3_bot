@@ -87,6 +87,49 @@ async def cmd_cookies_status(message: types.Message):
     else:
         await message.answer(f"❌ Файл куки НЕ найден по пути: `{config.COOKIES_PATH}`")
 
+
+@dp.message(Command("cookies_check"))
+async def cmd_cookies_check(message: types.Message):
+    """Детальная проверка наличия ключевых куки."""
+    if not config.COOKIES_PATH.exists():
+        await message.answer("❌ Файл куки не найден.")
+        return
+    
+    with open(config.COOKIES_PATH, 'r', encoding='utf-8', errors='ignore') as f:
+        lines = f.readlines()
+    
+    # Ключевые куки для авторизации YouTube
+    required_cookies = ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'LOGIN_INFO', '__Secure-1PSID', '__Secure-3PSID']
+    found = []
+    all_cookie_names = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split('\t')
+        if len(parts) >= 7:
+            cookie_name = parts[5]
+            all_cookie_names.append(cookie_name)
+            if cookie_name in required_cookies:
+                found.append(f"✅ {cookie_name}")
+    
+    missing = [f"❌ {c}" for c in required_cookies if c not in all_cookie_names]
+    
+    msg = f"📋 Диагностика куки ({len(all_cookie_names)} куки в файле):\n\n"
+    msg += "Ключевые куки авторизации:\n"
+    msg += "\n".join(found + missing)
+    msg += f"\n\nВсе имена куки в файле:\n`{', '.join(all_cookie_names)}`"
+    
+    if not found:
+        msg += "\n\n⚠️ НИ ОДНА ключевая кука авторизации не найдена! Вы НЕ были залогинены в Google/YouTube при экспорте куки."
+    elif len(found) < 4:
+        msg += "\n\n⚠️ Найдены не все ключевые куки. Попробуйте заново залогиниться в YouTube и экспортировать."
+    else:
+        msg += "\n\n✅ Куки авторизации выглядят полными."
+    
+    await message.answer(msg)
+
 @dp.message(F.text)
 async def handle_message(message: types.Message):
     url = message.text.strip()
