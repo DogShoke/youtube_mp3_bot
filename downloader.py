@@ -21,7 +21,7 @@ def _get_ydl_opts(outtmpl: str) -> dict:
         'noplaylist': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'android', 'ios', 'web', 'tv']
+                'player_client': ['tv', 'mweb', 'web']
             }
         },
         'postprocessors': [{
@@ -33,7 +33,6 @@ def _get_ydl_opts(outtmpl: str) -> dict:
         'no_warnings': False,
     }
     
-    # Проверяем /etc/secrets еще раз на всякий случай перед скачиванием
     secret_dir = Path("/etc/secrets")
     secret_file = None
     if secret_dir.exists():
@@ -44,17 +43,19 @@ def _get_ydl_opts(outtmpl: str) -> dict:
 
     if secret_file and secret_file.exists():
         try:
-            shutil.copy(secret_file, config.WRITABLE_COOKIES_PATH)
+            raw_text = secret_file.read_text(encoding="utf-8", errors="ignore")
+            processed = config.ensure_netscape_header(raw_text)
+            config.WRITABLE_COOKIES_PATH.write_text(processed, encoding="utf-8")
             ydl_opts['cookiefile'] = str(config.WRITABLE_COOKIES_PATH)
-            logger.info(f"Используем куки из секретного файла {secret_file} -> {config.WRITABLE_COOKIES_PATH}")
+            logger.info(f"Используем подготовленные куки {secret_file} -> {config.WRITABLE_COOKIES_PATH} ({len(processed.splitlines())} строк)")
         except Exception as e:
-            logger.error(f"Ошибка копирования секретных куки: {e}")
+            logger.error(f"Ошибка чтения секретных куки: {e}")
             ydl_opts['cookiefile'] = str(secret_file)
     elif config.COOKIES_PATH.exists():
         ydl_opts['cookiefile'] = str(config.COOKIES_PATH)
         logger.info(f"Используем куки из файла: {config.COOKIES_PATH}")
     else:
-        logger.warning("⚠️ ВНИМАНИЕ: Файл куки отсутствует. YouTube может заблокировать скачивание.")
+        logger.warning("⚠️ ВНИМАНИЕ: Файл куки отсутствует.")
         
     return ydl_opts
 
