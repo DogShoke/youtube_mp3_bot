@@ -20,13 +20,19 @@ if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
 DOWNLOADS_DIR = BASE_DIR / "downloads"
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
-# Путь к файлу cookies
+# Определение пути к cookies.txt (поддержка Render Secret Files и локального файла)
 COOKIES_FILE_NAME = os.getenv("COOKIES_FILE", "cookies.txt")
-COOKIES_PATH = BASE_DIR / COOKIES_FILE_NAME
+RENDER_SECRET_PATH = Path("/etc/secrets") / COOKIES_FILE_NAME
 
-# Если переменная окружения YOUTUBE_COOKIES или YOUTUBE_COOKIES_TEXT содержит текст куки, создаем/обновляем cookies.txt
+if RENDER_SECRET_PATH.exists():
+    COOKIES_PATH = RENDER_SECRET_PATH
+    print(f"Используем Secret File cookies из {COOKIES_PATH}")
+else:
+    COOKIES_PATH = BASE_DIR / COOKIES_FILE_NAME
+
+# Если переменная окружения YOUTUBE_COOKIES содержит текст куки, пишем в COOKIES_PATH
 YOUTUBE_COOKIES_TEXT = os.getenv("YOUTUBE_COOKIES") or os.getenv("YOUTUBE_COOKIES_TEXT")
-if YOUTUBE_COOKIES_TEXT:
+if YOUTUBE_COOKIES_TEXT and not COOKIES_PATH.exists():
     try:
         COOKIES_PATH.write_text(YOUTUBE_COOKIES_TEXT.strip() + "\n", encoding="utf-8")
         print(f"Куки успешно загружены из переменной окружения в {COOKIES_PATH}")
