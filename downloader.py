@@ -242,13 +242,94 @@ async def download_youtube_video(url: str, quality: str = "1080") -> dict:
 
     raise Exception(f"Не удалось скачать видео в качестве {quality}p. Попробуйте выбрать более низкое качество.")
 
+# ==============================================================================
+# GUI версия: Cobalt (основной) -> yt-dlp (запасной)
+# ==============================================================================
+def _cobalt_download_sync(url: str, output_path: str, unique_id: str) -> dict | None:
+    """Синхронная загрузка через Cobalt API для GUI (использует urllib, без asyncio)."""
+    import urllib.request
+    import json as _json
 
-# ==============================================================================
-# GUI версия
-# ==============================================================================
+    headers_dict = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = _json.dumps({
+        "url": url,
+        "downloadMode": "audio",
+        "audioFormat": "mp3",
+        "audioBitrate": "320",
+    }).encode("utf-8")
+
+    for instance in COBALT_INSTANCES:
+        try:
+            req = urllib.request.Request(instance, data=payload, headers=headers_dict, method="POST")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+
+            if data.get("status") == "error":
+                continue
+
+            download_url = data.get("url")
+            filename = data.get("filename", f"{unique_id}_audio.mp3")
+            if not download_url:
+                continue
+
+            out_dir = Path(output_path)
+            mp3_path = out_dir / filename
+            if not str(mp3_path).endswith(".mp3"):
+                mp3_path = mp3_path.with_suffix(".mp3")
+
+            # Если файл уже существует, добавляем индекс
+            counter = 1
+            original_path = mp3_path
+            while mp3_path.exists():
+                mp3_path = out_dir / f"{original_path.stem} ({counter}).mp3"
+                counter += 1
+
+            urllib.request.urlretrieve(download_url, str(mp3_path))
+
+            if mp3_path.exists() and mp3_path.stat().st_size > 1000:
+                # Получаем метаданные через oEmbed синхронно
+                title, artist = "Unknown Title", "Unknown Artist"
+                try:
+                    oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+                    oembed_req = urllib.request.Request(oembed_url)
+                    with urllib.request.urlopen(oembed_req, timeout=10) as oembed_resp:
+                        oembed_data = _json.loads(oembed_resp.read().decode("utf-8"))
+                        title = oembed_data.get("title", title)
+                        artist = oembed_data.get("author_name", artist)
+                except:
+                    pass
+
+                return {
+                    "file_path": str(mp3_path),
+                    "title": title,
+                    "artist": artist,
+                    "duration": 0,
+                    "file_size": mp3_path.stat().st_size,
+                }
+            else:
+                if mp3_path.exists():
+                    mp3_path.unlink()
+        except Exception:
+            continue
+
+    return None
+
+
 def download_audio_gui(url: str, output_path: str) -> dict:
+    """Скачивание для GUI: сначала Cobalt, потом yt-dlp."""
+    unique_id = uuid.uuid4().hex[:8]
+
+    # 1. Cobalt API
+    result = _cobalt_download_sync(url, output_path, unique_id)
+    if result:
+        return result
+
+    # 2. yt-dlp (запасной)
     ffmpeg_path = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
-    temp_id = f"gui_temp_{uuid.uuid4().hex[:6]}_"
+    temp_id = f"gui_temp_{unique_id}_"
     out_dir = Path(output_path)
     outtmpl = str(out_dir / f"{temp_id}%(title)s.%(ext)s")
 

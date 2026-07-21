@@ -65,6 +65,11 @@ class YouTubeMP3DownloaderApp(ctk.CTk):
         )
         self.url_entry.pack(pady=10)
         
+        # Поддержка вставки через Ctrl+V и правый клик
+        self.url_entry.bind("<Button-3>", self.paste_from_clipboard)
+        self.url_entry.bind("<Control-v>", self.paste_from_clipboard)
+        self.url_entry.bind("<Control-V>", self.paste_from_clipboard)
+        
         # Фрейм для выбора пути сохранения
         self.dir_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.dir_frame.pack(pady=10)
@@ -114,6 +119,16 @@ class YouTubeMP3DownloaderApp(ctk.CTk):
         )
         self.status_label.pack(pady=(5, 10))
         
+    def paste_from_clipboard(self, event=None):
+        """Вставка текста из буфера обмена."""
+        try:
+            clipboard_text = self.clipboard_get()
+            if clipboard_text:
+                self.url_var.set(clipboard_text.strip())
+        except Exception:
+            pass
+        return "break"
+    
     def browse_directory(self):
         """Открывает диалог выбора папки."""
         selected_dir = filedialog.askdirectory(initialdir=self.save_dir_var.get())
