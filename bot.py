@@ -49,10 +49,9 @@ YOUTUBE_REGEX = re.compile(
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    """Приветственное сообщение."""
     user_name = message.from_user.full_name
     await message.answer(
-        f"Привет, {user_name}! ??\n\n"
+        f"Привет, {user_name}! 🎵\n\n"
         "Отправь мне ссылку на любое видео с **YouTube**, и я скачаю его аудиодорожку "
         "в формате **MP3** с наилучшим качеством (320 kbps).\n\n"
         "Пример ссылки: https://www.youtube.com/watch?v=..."
@@ -60,30 +59,47 @@ async def cmd_start(message: types.Message):
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
-    """Помощь по командам."""
     await message.answer(
         "Как пользоваться ботом:\n"
         "1. Скопируйте ссылку на видео с YouTube.\n"
         "2. Вставьте её сюда и отправьте сообщением.\n"
         "3. Бот скачает аудиодорожку, перекодирует в MP3 и пришлет вам файл.\n\n"
-        "?? *Обратите внимание*: Лимит Telegram на отправку файлов ботами составляет **50 МБ** "
-        "(это примерно 20 минут аудио в наивысшем качестве). Видео большей длины бот не сможет отправить."
+        "🎧 *Обратите внимание*: Лимит Telegram на отправку файлов ботами составляет **50 МБ** "
+        "(это примерно 20 минут аудио в наивысшем качестве)."
     )
+
+@dp.message(Command("cookies_status"))
+async def cmd_cookies_status(message: types.Message):
+    """Проверка статуса cookies."""
+    if config.COOKIES_PATH.exists():
+        size = config.COOKIES_PATH.stat().st_size
+        with open(config.COOKIES_PATH, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+        data_lines = [l for l in lines if l.strip() and not l.startswith('#')]
+        await message.answer(
+            f"✅ Файл куки найден\n"
+            f"Путь: `{config.COOKIES_PATH}`\n"
+            f"Размер: {size} байт\n"
+            f"Всего строк: {len(lines)}\n"
+            f"Строк с данными: {len(data_lines)}\n"
+            f"Первая строка: `{lines[0].strip()[:80] if lines else 'пусто'}`"
+        )
+    else:
+        await message.answer(f"❌ Файл куки НЕ найден по пути: `{config.COOKIES_PATH}`")
 
 @dp.message(F.text)
 async def handle_message(message: types.Message):
-    """Обработчик всех текстовых сообщений."""
     url = message.text.strip()
     
     if not YOUTUBE_REGEX.match(url):
         await message.answer(
-            "? Это не похоже на ссылку YouTube.\n"
+            "❌ Это не похоже на ссылку YouTube.\n"
             "Пожалуйста, отправьте корректную ссылку, например:\n"
             "https://www.youtube.com/watch?v=dQw4w9XcQ"
         )
         return
 
-    status_msg = await message.answer("? Скачиваю аудио с YouTube и конвертирую в MP3... Это может занять некоторое время.")
+    status_msg = await message.answer("⏳ Скачиваю аудио с YouTube и конвертирую в MP3... Это может занять некоторое время.")
     
     audio_path = None
     try:
@@ -93,13 +109,12 @@ async def handle_message(message: types.Message):
         limit_bytes = 50 * 1024 * 1024
         if info['file_size'] > limit_bytes:
             await status_msg.edit_text(
-                "? Файл превышает лимит Telegram в 50 МБ.\n"
-                "К сожалению, Telegram Bot API запрещает отправку файлов крупнее этого размера.\n"
+                "❌ Файл превышает лимит Telegram в 50 МБ.\n"
                 "Пожалуйста, выберите видео меньшей длины."
             )
             return
 
-        await status_msg.edit_text("?? Отправляю MP3 в чат...")
+        await status_msg.edit_text("🎶 Отправляю MP3 в чат...")
         
         audio_file = FSInputFile(audio_path)
         
@@ -108,25 +123,31 @@ async def handle_message(message: types.Message):
             title=info['title'],
             performer=info['artist'],
             duration=info['duration'],
-            caption=f"?? **{info['title']}**\nКанал: {info['artist']}"
+            caption=f"🎶 **{info['title']}**\nКанал: {info['artist']}"
         )
         
         await status_msg.delete()
         
     except Exception as e:
-        logger.error(f"Ошибка при обработке сообщения от {message.from_user.id}: {e}")
-        await status_msg.edit_text(
-            "? Произошла ошибка при загрузке или конвертации видео.\n\n"
-            "Возможные причины:\n"
-            "• Видео удалено или заблокировано.\n"
-            "• Видео является трансляцией (стримом).\n"
-            "• Проблемы с соединением с YouTube."
-        )
+        logger.error(f"Ошибка при обработке сообщения от {message.from_user.id}: {e}", exc_info=True)
+        err_str = str(e)
+        short_err = err_str[:500] if len(err_str) > 500 else err_str
+        
+        if "Sign in to confirm" in err_str or "cookies" in err_str.lower():
+            await status_msg.edit_text(
+                f"❌ YouTube потребовал авторизацию (антибот-защита).\n\n"
+                f"Куки файл: {'найден (' + str(config.COOKIES_PATH) + ')' if config.COOKIES_PATH.exists() else 'НЕ НАЙДЕН'}\n\n"
+                f"Детали ошибки:\n`{short_err}`"
+            )
+        else:
+            await status_msg.edit_text(
+                f"❌ Ошибка при загрузке видео:\n\n`{short_err}`"
+            )
     finally:
         if audio_path and os.path.exists(audio_path):
             try:
                 os.remove(audio_path)
-                logger.info(f"Временный файл успешно удален: {audio_path}")
+                logger.info(f"Временный файл удален: {audio_path}")
             except Exception as clean_err:
                 logger.error(f"Не удалось удалить временный файл {audio_path}: {clean_err}")
 
@@ -142,10 +163,11 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info(f"Веб-сервер проверки здоровья запущен на порту {port}")
+    logger.info(f"Веб-сервер запущен на порту {port}")
 
 async def main():
     logger.info("Запуск Telegram-бота...")
+    logger.info(f"Cookies файл: {config.COOKIES_PATH} (существует: {config.COOKIES_PATH.exists()})")
     await start_web_server()
     await dp.start_polling(bot)
 
