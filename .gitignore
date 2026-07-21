@@ -17,3 +17,6 @@ downloads/
 dist/
 build/
 *.spec
+
+# Cookies
+cookies.txt
