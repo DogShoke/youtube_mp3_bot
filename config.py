@@ -90,7 +90,7 @@ if FOUND_SECRET_FILE and FOUND_SECRET_FILE.exists():
         # Подсчитаем количество строк данных для лога
         data_lines = [l for l in fixed.splitlines() if l.strip() and not l.startswith('#')]
         has_tabs = all('\t' in l for l in data_lines) if data_lines else False
-        print(f"✅ Куки подготовлены: {FOUND_SECRET_FILE} -> {COOKIES_PATH}")
+        print(f"[OK] Cookies: {FOUND_SECRET_FILE} -> {COOKIES_PATH}")
         print(f"   Строк данных: {len(data_lines)}, Табуляция: {'✅' if has_tabs else '❌ ИСПРАВЛЕНА'}")
     except Exception as e:
         COOKIES_PATH = FOUND_SECRET_FILE
@@ -103,12 +103,12 @@ if YOUTUBE_COOKIES_TEXT and not COOKIES_PATH.exists():
     try:
         fixed = fix_cookie_format(YOUTUBE_COOKIES_TEXT)
         COOKIES_PATH.write_text(fixed, encoding="utf-8")
-        print(f"✅ Куки из YOUTUBE_COOKIES -> {COOKIES_PATH}")
+        print(f"[OK] Cookies from env -> {COOKIES_PATH}")
     except Exception as e:
-        print(f"⚠️ Ошибка записи YOUTUBE_COOKIES: {e}")
+        print(f"[WARN] Cookie write error: {e}")
 
 if COOKIES_PATH.exists():
     size = COOKIES_PATH.stat().st_size
-    print(f"ℹ️ Куки файл: {COOKIES_PATH} ({size} байт)")
+    print(f"[INFO] Cookie file: {COOKIES_PATH} ({size} bytes)")
 else:
-    print("⚠️ ВНИМАНИЕ: Файл куки НЕ НАЙДЕН!")
+    print("[WARN] Cookie file not found!")
