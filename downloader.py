@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import uuid
 import os
+import json
 import aiohttp
 import yt_dlp
 import imageio_ffmpeg
@@ -14,14 +15,22 @@ from config import DOWNLOADS_DIR
 logger = logging.getLogger(__name__)
 
 # ==============================================================================
-# Способ 1: Cobalt API (основной, работает с серверных IP)
+# Способ 1: Cobalt API (основной, обходит блокировку YouTube на серверных IP)
 # ==============================================================================
+# Проверенные рабочие инстансы для YouTube (cobalt.directory, обновлено 2026-07-21)
 COBALT_INSTANCES = [
-    "https://api.cobalt.tools",
+    "https://api.cobalt.liubquanti.click",
+    "https://nuko-c.meowing.de",
+    "https://cobalt.omega.wolfy.love",
+    "https://cobalt.alpha.wolfy.love",
+    "https://dog.kittycat.boo",
+    "https://api.qwkuns.me",
+    "https://api-cobalt.eversiege.network",
+    "https://subito-c.meowing.de",
 ]
 
 async def _try_cobalt_download(url: str, unique_id: str) -> dict | None:
-    """Попытка скачать через Cobalt API."""
+    """Попытка скачать аудио через Cobalt API (перебирает несколько инстансов)."""
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -35,26 +44,38 @@ async def _try_cobalt_download(url: str, unique_id: str) -> dict | None:
 
     for instance in COBALT_INSTANCES:
         try:
-            logger.info(f"Пробуем Cobalt: {instance}")
+            logger.info(f"Cobalt: пробуем {instance}...")
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     instance,
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30)
+                    timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
-                    data = await resp.json()
-                    logger.info(f"Cobalt ответ: status={data.get('status')}")
+                    if resp.status == 403:
+                        logger.warning(f"Cobalt {instance}: 403 Forbidden (требуется авторизация)")
+                        continue
+                    if resp.status == 429:
+                        logger.warning(f"Cobalt {instance}: 429 Too Many Requests")
+                        continue
+                    if resp.status != 200:
+                        logger.warning(f"Cobalt {instance}: HTTP {resp.status}")
+                        continue
 
-                    if data.get("status") == "error":
-                        logger.warning(f"Cobalt ошибка: {data.get('error')}")
+                    data = await resp.json()
+                    status = data.get("status")
+                    logger.info(f"Cobalt {instance}: status={status}")
+
+                    if status == "error":
+                        error_info = data.get("error", {})
+                        logger.warning(f"Cobalt {instance}: ошибка: {error_info}")
                         continue
 
                     download_url = data.get("url")
                     filename = data.get("filename", f"{unique_id}_audio.mp3")
 
                     if not download_url:
-                        logger.warning("Cobalt не вернул URL для скачивания")
+                        logger.warning(f"Cobalt {instance}: нет URL для скачивания")
                         continue
 
                     # Скачиваем файл
@@ -62,89 +83,99 @@ async def _try_cobalt_download(url: str, unique_id: str) -> dict | None:
                     if not str(mp3_path).endswith(".mp3"):
                         mp3_path = mp3_path.with_suffix(".mp3")
 
+                    logger.info(f"Cobalt: скачиваем файл -> {mp3_path}")
                     async with session.get(
                         download_url,
-                        timeout=aiohttp.ClientTimeout(total=300)
+                        timeout=aiohttp.ClientTimeout(total=300),
                     ) as file_resp:
                         if file_resp.status != 200:
                             logger.warning(f"Cobalt: ошибка скачивания файла, HTTP {file_resp.status}")
                             continue
 
-                        with open(mp3_path, 'wb') as f:
+                        with open(mp3_path, "wb") as f:
                             async for chunk in file_resp.content.iter_chunked(8192):
                                 f.write(chunk)
 
-                    if mp3_path.exists() and mp3_path.stat().st_size > 0:
-                        # Получаем метаданные через yt-dlp (без скачивания)
+                    if mp3_path.exists() and mp3_path.stat().st_size > 1000:
                         title, artist, duration = await _get_metadata(url)
-                        logger.info(f"Cobalt: успешно скачано -> {mp3_path}")
+                        logger.info(f"Cobalt: ✅ скачано ({mp3_path.stat().st_size} байт)")
                         return {
-                            'file_path': str(mp3_path),
-                            'title': title,
-                            'artist': artist,
-                            'duration': duration,
-                            'file_size': mp3_path.stat().st_size,
+                            "file_path": str(mp3_path),
+                            "title": title,
+                            "artist": artist,
+                            "duration": duration,
+                            "file_size": mp3_path.stat().st_size,
                         }
+                    else:
+                        logger.warning(f"Cobalt: файл пустой или слишком маленький")
+                        if mp3_path.exists():
+                            mp3_path.unlink()
+                        continue
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Cobalt {instance}: таймаут")
+            continue
         except Exception as e:
-            logger.warning(f"Cobalt ({instance}) не удался: {e}")
+            logger.warning(f"Cobalt {instance}: исключение: {e}")
             continue
 
+    logger.warning("Cobalt: ни один инстанс не сработал")
     return None
 
+
 async def _get_metadata(url: str) -> tuple:
-    """Получить метаданные видео (без скачивания)."""
+    """Получить метаданные видео через yt-dlp (без скачивания)."""
     try:
         loop = asyncio.get_running_loop()
         def _extract():
             ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'skip_download': True,
-                'extract_flat': False,
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "extract_flat": False,
             }
             if config.COOKIES_PATH.exists():
-                ydl_opts['cookiefile'] = str(config.COOKIES_PATH)
+                ydl_opts["cookiefile"] = str(config.COOKIES_PATH)
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-                title = info.get('title', 'Unknown Title')
-                artist = info.get('artist') or info.get('uploader', 'Unknown Artist')
-                duration = int(info.get('duration', 0))
+                title = info.get("title", "Unknown Title")
+                artist = info.get("artist") or info.get("uploader", "Unknown Artist")
+                duration = int(info.get("duration", 0))
                 return title, artist, duration
         return await loop.run_in_executor(None, _extract)
     except Exception as e:
-        logger.warning(f"Не удалось получить метаданные: {e}")
+        logger.warning(f"Не удалось получить метаданные через yt-dlp: {e}")
         return "Unknown Title", "Unknown Artist", 0
 
 
 # ==============================================================================
-# Способ 2: yt-dlp (запасной, работает с домашних IP или с куки)
+# Способ 2: yt-dlp (запасной, работает с домашних IP или с валидными куки)
 # ==============================================================================
 def _get_ydl_opts(outtmpl: str) -> dict:
-    ffmpeg_path = shutil.which('ffmpeg') or imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg_path = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
 
     ydl_opts = {
-        'format': 'bestaudio/best',
-        'ffmpeg_location': ffmpeg_path,
-        'outtmpl': outtmpl,
-        'noplaylist': True,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '320',
+        "format": "bestaudio/best",
+        "ffmpeg_location": ffmpeg_path,
+        "outtmpl": outtmpl,
+        "noplaylist": True,
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "320",
         }],
-        'quiet': False,
-        'no_warnings': False,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
+        "quiet": False,
+        "no_warnings": False,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         },
     }
 
     if config.COOKIES_PATH.exists():
-        ydl_opts['cookiefile'] = str(config.COOKIES_PATH)
-        logger.info(f"yt-dlp: используем куки из {config.COOKIES_PATH}")
+        ydl_opts["cookiefile"] = str(config.COOKIES_PATH)
 
     return ydl_opts
+
 
 def _sync_download_ytdlp(url: str, unique_id: str) -> dict:
     outtmpl = str(DOWNLOADS_DIR / f"{unique_id}_%(title)s.%(ext)s")
@@ -152,10 +183,9 @@ def _sync_download_ytdlp(url: str, unique_id: str) -> dict:
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-
-        title = info.get('title', 'Unknown Title')
-        artist = info.get('artist') or info.get('uploader', 'Unknown Artist')
-        duration = int(info.get('duration', 0))
+        title = info.get("title", "Unknown Title")
+        artist = info.get("artist") or info.get("uploader", "Unknown Artist")
+        duration = int(info.get("duration", 0))
 
         mp3_file = None
         for p in DOWNLOADS_DIR.glob(f"{unique_id}_*.mp3"):
@@ -166,33 +196,33 @@ def _sync_download_ytdlp(url: str, unique_id: str) -> dict:
             raise FileNotFoundError("MP3 файл не найден после конвертации.")
 
         return {
-            'file_path': str(mp3_file),
-            'title': title,
-            'artist': artist,
-            'duration': duration,
-            'file_size': mp3_file.stat().st_size
+            "file_path": str(mp3_file),
+            "title": title,
+            "artist": artist,
+            "duration": duration,
+            "file_size": mp3_file.stat().st_size,
         }
 
 
 # ==============================================================================
-# Основная функция: сначала Cobalt, потом yt-dlp
+# Основная функция: Cobalt -> yt-dlp
 # ==============================================================================
 async def download_youtube_audio(url: str) -> dict:
     unique_id = str(uuid.uuid4())[:8]
-
-    # 1. Пробуем Cobalt API
     logger.info(f"Начинаем скачивание: {url}")
+
+    # 1. Cobalt API
     result = await _try_cobalt_download(url, unique_id)
     if result:
-        logger.info("Скачано через Cobalt API ✅")
+        logger.info("✅ Скачано через Cobalt API")
         return result
 
-    # 2. Если Cobalt не сработал — yt-dlp
+    # 2. yt-dlp (запасной)
     logger.info("Cobalt не сработал, пробуем yt-dlp...")
     loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(None, _sync_download_ytdlp, url, unique_id)
-        logger.info("Скачано через yt-dlp ✅")
+        logger.info("✅ Скачано через yt-dlp")
         return result
     except Exception as e:
         logger.error(f"yt-dlp тоже не сработал: {e}", exc_info=True)
@@ -200,20 +230,39 @@ async def download_youtube_audio(url: str) -> dict:
 
 
 # ==============================================================================
-# GUI версия (для десктопного приложения)
+# GUI версия (для десктопного приложения, использует yt-dlp напрямую)
 # ==============================================================================
 def download_audio_gui(url: str, output_path: str) -> dict:
+    """Синхронная функция для GUI. Использует yt-dlp напрямую (работает на домашнем IP)."""
+    ffmpeg_path = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
     temp_id = f"gui_temp_{uuid.uuid4().hex[:6]}_"
     out_dir = Path(output_path)
     outtmpl = str(out_dir / f"{temp_id}%(title)s.%(ext)s")
 
-    ydl_opts = _get_ydl_opts(outtmpl)
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "ffmpeg_location": ffmpeg_path,
+        "outtmpl": outtmpl,
+        "noplaylist": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "android", "mweb", "web_creator"]
+            }
+        },
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "320",
+        }],
+        "quiet": True,
+        "no_warnings": True,
+    }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        title = info.get('title', 'Unknown Title')
-        artist = info.get('artist') or info.get('uploader', 'Unknown Artist')
-        duration = int(info.get('duration', 0))
+        title = info.get("title", "Unknown Title")
+        artist = info.get("artist") or info.get("uploader", "Unknown Artist")
+        duration = int(info.get("duration", 0))
 
         temp_file = None
         for p in out_dir.glob(f"{temp_id}*.mp3"):
@@ -235,9 +284,9 @@ def download_audio_gui(url: str, output_path: str) -> dict:
         temp_file.rename(final_file)
 
         return {
-            'file_path': str(final_file),
-            'title': title,
-            'artist': artist,
-            'duration': duration,
-            'file_size': final_file.stat().st_size
+            "file_path": str(final_file),
+            "title": title,
+            "artist": artist,
+            "duration": duration,
+            "file_size": final_file.stat().st_size,
         }
