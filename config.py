@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import re
 import shutil
 import logging
 from pathlib import Path
@@ -20,13 +21,53 @@ if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
 DOWNLOADS_DIR = BASE_DIR / "downloads"
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
-def ensure_netscape_header(text: str) -> str:
+def fix_cookie_format(text: str) -> str:
+    """Исправляет формат cookies.txt: добавляет заголовок Netscape и восстанавливает табуляцию."""
     lines = text.strip().splitlines()
     if not lines:
         return ""
-    if not any("Netscape" in line for line in lines[:3]):
-        return "# Netscape HTTP Cookie File\n" + text.strip() + "\n"
-    return text.strip() + "\n"
+    
+    result = []
+    has_header = False
+    
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        
+        # Пропускаем и сохраняем комментарии
+        if stripped.startswith('#'):
+            if 'Netscape' in stripped or 'HTTP Cookie' in stripped:
+                has_header = True
+            result.append(stripped)
+            continue
+        
+        # Данные куки: нужно ровно 7 полей, разделенных TAB
+        # Если табы потерялись (заменились пробелами), пытаемся восстановить
+        if '\t' in stripped:
+            # Табы уже есть — проверим количество полей
+            parts = stripped.split('\t')
+        else:
+            # Табов нет — разделяем по пробелам и собираем обратно
+            parts = stripped.split()
+        
+        if len(parts) >= 7:
+            # Стандартный формат: domain, flag, path, secure, expiry, name, value
+            # Первые 6 полей + всё остальное как value (value может содержать пробелы)
+            cookie_line = '\t'.join(parts[:6]) + '\t' + ' '.join(parts[6:])
+            result.append(cookie_line)
+        elif len(parts) == 6:
+            # Возможно value пустое
+            result.append('\t'.join(parts) + '\t')
+        else:
+            # Непонятная строка — пропускаем
+            continue
+    
+    header = "# Netscape HTTP Cookie File\n# This file was auto-fixed by youtube_mp3_bot\n\n"
+    if has_header:
+        return header + '\n'.join([l for l in result if 'Netscape' not in l and 'HTTP Cookie' not in l]) + '\n'
+    else:
+        return header + '\n'.join(result) + '\n'
 
 RENDER_SECRET_DIR = Path("/etc/secrets")
 FOUND_SECRET_FILE = None
@@ -42,26 +83,32 @@ WRITABLE_COOKIES_PATH = DOWNLOADS_DIR / "cookies.txt"
 if FOUND_SECRET_FILE and FOUND_SECRET_FILE.exists():
     try:
         raw_text = FOUND_SECRET_FILE.read_text(encoding="utf-8", errors="ignore")
-        processed = ensure_netscape_header(raw_text)
-        WRITABLE_COOKIES_PATH.write_text(processed, encoding="utf-8")
+        fixed = fix_cookie_format(raw_text)
+        WRITABLE_COOKIES_PATH.write_text(fixed, encoding="utf-8")
         COOKIES_PATH = WRITABLE_COOKIES_PATH
-        print(f"✅ Успешно подготовлен Secret File cookies из {FOUND_SECRET_FILE} -> {COOKIES_PATH} (Строк: {len(processed.splitlines())})")
+        
+        # Подсчитаем количество строк данных для лога
+        data_lines = [l for l in fixed.splitlines() if l.strip() and not l.startswith('#')]
+        has_tabs = all('\t' in l for l in data_lines) if data_lines else False
+        print(f"✅ Куки подготовлены: {FOUND_SECRET_FILE} -> {COOKIES_PATH}")
+        print(f"   Строк данных: {len(data_lines)}, Табуляция: {'✅' if has_tabs else '❌ ИСПРАВЛЕНА'}")
     except Exception as e:
         COOKIES_PATH = FOUND_SECRET_FILE
-        print(f"⚠️ Ошибка при подготовке cookies из {FOUND_SECRET_FILE}: {e}")
+        print(f"⚠️ Ошибка при подготовке cookies: {e}")
 else:
     COOKIES_PATH = BASE_DIR / os.getenv("COOKIES_FILE", "cookies.txt")
 
 YOUTUBE_COOKIES_TEXT = os.getenv("YOUTUBE_COOKIES") or os.getenv("YOUTUBE_COOKIES_TEXT")
 if YOUTUBE_COOKIES_TEXT and not COOKIES_PATH.exists():
     try:
-        processed = ensure_netscape_header(YOUTUBE_COOKIES_TEXT)
-        COOKIES_PATH.write_text(processed, encoding="utf-8")
-        print(f"✅ Куки загружены из YOUTUBE_COOKIES в {COOKIES_PATH}")
+        fixed = fix_cookie_format(YOUTUBE_COOKIES_TEXT)
+        COOKIES_PATH.write_text(fixed, encoding="utf-8")
+        print(f"✅ Куки из YOUTUBE_COOKIES -> {COOKIES_PATH}")
     except Exception as e:
         print(f"⚠️ Ошибка записи YOUTUBE_COOKIES: {e}")
 
 if COOKIES_PATH.exists():
-    print(f"ℹ️ Итоговый файл куки: {COOKIES_PATH} (Размер: {COOKIES_PATH.stat().st_size} байт)")
+    size = COOKIES_PATH.stat().st_size
+    print(f"ℹ️ Куки файл: {COOKIES_PATH} ({size} байт)")
 else:
     print("⚠️ ВНИМАНИЕ: Файл куки НЕ НАЙДЕН!")
