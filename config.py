@@ -112,3 +112,7 @@ if COOKIES_PATH.exists():
     print(f"[INFO] Cookie file: {COOKIES_PATH} ({size} bytes)")
 else:
     print("[WARN] Cookie file not found!")
+
+# Telegram MTProto API (для отправки файлов > 50 МБ)
+API_ID = os.getenv('API_ID')
+API_HASH = os.getenv('API_HASH')
