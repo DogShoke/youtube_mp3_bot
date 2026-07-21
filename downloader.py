@@ -21,7 +21,7 @@ def _get_ydl_opts(outtmpl: str) -> dict:
         'noplaylist': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'android', 'mweb', 'web_creator']
+                'player_client': ['mweb', 'android', 'ios', 'web']
             }
         },
         'postprocessors': [{
@@ -33,19 +33,24 @@ def _get_ydl_opts(outtmpl: str) -> dict:
         'no_warnings': True,
     }
     
-    if config.COOKIES_PATH.exists():
+    render_secret = Path("/etc/secrets") / config.COOKIES_FILE_NAME
+    if render_secret.exists():
+        try:
+            shutil.copy(render_secret, config.WRITABLE_COOKIES_PATH)
+            ydl_opts['cookiefile'] = str(config.WRITABLE_COOKIES_PATH)
+            logger.info(f"Используем скопированные cookies из {config.WRITABLE_COOKIES_PATH}")
+        except Exception as e:
+            logger.error(f"Ошибка копирования cookies: {e}")
+            ydl_opts['cookiefile'] = str(render_secret)
+    elif config.COOKIES_PATH.exists():
         ydl_opts['cookiefile'] = str(config.COOKIES_PATH)
         logger.info(f"Используем cookies из файла: {config.COOKIES_PATH}")
     else:
-        logger.warning("Файл cookies.txt не найден. Скачивание с хостингов может вызывать блокировку YouTube.")
+        logger.warning("Файл cookies.txt не найден.")
         
     return ydl_opts
 
 def _sync_download(url: str, unique_id: str) -> dict:
-    """
-    Синхронная функция скачивания аудио через yt-dlp.
-    Должна запускаться в отдельном потоке (executor).
-    """
     outtmpl = str(DOWNLOADS_DIR / f"{unique_id}_%(title)s.%(ext)s")
     ydl_opts = _get_ydl_opts(outtmpl)
     
@@ -73,9 +78,6 @@ def _sync_download(url: str, unique_id: str) -> dict:
         }
 
 async def download_youtube_audio(url: str) -> dict:
-    """
-    Асинхронная обертка для скачивания аудио.
-    """
     unique_id = str(uuid.uuid4())[:8]
     loop = asyncio.get_running_loop()
     try:
@@ -86,9 +88,6 @@ async def download_youtube_audio(url: str) -> dict:
         raise e
 
 def download_audio_gui(url: str, output_path: str) -> dict:
-    """
-    Синхронная функция скачивания аудио для GUI-приложения.
-    """
     temp_id = f"gui_temp_{uuid.uuid4().hex[:6]}_"
     out_dir = Path(output_path)
     outtmpl = str(out_dir / f"{temp_id}%(title)s.%(ext)s")

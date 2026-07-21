@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -23,10 +24,16 @@ DOWNLOADS_DIR.mkdir(exist_ok=True)
 # Определение пути к cookies.txt (поддержка Render Secret Files и локального файла)
 COOKIES_FILE_NAME = os.getenv("COOKIES_FILE", "cookies.txt")
 RENDER_SECRET_PATH = Path("/etc/secrets") / COOKIES_FILE_NAME
+WRITABLE_COOKIES_PATH = DOWNLOADS_DIR / COOKIES_FILE_NAME
 
 if RENDER_SECRET_PATH.exists():
-    COOKIES_PATH = RENDER_SECRET_PATH
-    print(f"Используем Secret File cookies из {COOKIES_PATH}")
+    try:
+        shutil.copy(RENDER_SECRET_PATH, WRITABLE_COOKIES_PATH)
+        COOKIES_PATH = WRITABLE_COOKIES_PATH
+        print(f"Скопированы Secret File cookies из {RENDER_SECRET_PATH} в {COOKIES_PATH}")
+    except Exception as e:
+        COOKIES_PATH = RENDER_SECRET_PATH
+        print(f"Предупреждение при копировании cookies: {e}")
 else:
     COOKIES_PATH = BASE_DIR / COOKIES_FILE_NAME
 
