@@ -7,21 +7,18 @@ import asyncio
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters.callback_data import CallbackData
 import config
-from downloader import download_youtube_audio
+from downloader import download_youtube_audio, download_youtube_video
 
 # Настройка логирования
 if sys.stdout and sys.stdout.encoding != 'utf-8':
-    try:
-        sys.stdout.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except: pass
 if sys.stderr and sys.stderr.encoding != 'utf-8':
-    try:
-        sys.stderr.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+    try: sys.stderr.reconfigure(encoding='utf-8')
+    except: pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,172 +27,157 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Проверка токена
 if not config.BOT_TOKEN:
-    print("\n" + "="*70)
-    print("Ошибка: Токен Telegram-бота не установлен!")
-    print(f"Пожалуйста, откройте файл {config.BASE_DIR / '.env'} и впишите ваш токен.")
-    print("="*70 + "\n")
+    print("Ошибка: BOT_TOKEN не установлен!")
     sys.exit(1)
 
-# Инициализация бота и диспетчера
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
 
-# Регулярное выражение для поиска ссылок на YouTube
 YOUTUBE_REGEX = re.compile(
     r'(https?://)?(www\.)?(youtube\.com|youtu\.be|music\.youtube\.com)/.+'
 )
 
+
+def get_format_keyboard(url: str) -> InlineKeyboardMarkup:
+    """Клавиатура выбора формата."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🎵 MP3 (320 kbps)", callback_data=f"dl:audio:{url}"),
+        ],
+        [
+            InlineKeyboardButton(text="🎬 Видео 1080p", callback_data=f"dl:1080:{url}"),
+            InlineKeyboardButton(text="🎬 Видео 4K", callback_data=f"dl:2160:{url}"),
+        ],
+        [
+            InlineKeyboardButton(text="🎬 Видео 720p", callback_data=f"dl:720:{url}"),
+            InlineKeyboardButton(text="🎬 Видео 480p", callback_data=f"dl:480:{url}"),
+        ],
+    ])
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    user_name = message.from_user.full_name
     await message.answer(
-        f"Привет, {user_name}! 🎵\n\n"
-        "Отправь мне ссылку на любое видео с **YouTube**, и я скачаю его аудиодорожку "
-        "в формате **MP3** с наилучшим качеством (320 kbps).\n\n"
-        "Пример ссылки: https://www.youtube.com/watch?v=..."
+        f"Привет, {message.from_user.full_name}! 🎵\n\n"
+        "Отправь мне ссылку на любое видео с **YouTube**, и я предложу скачать его:\n"
+        "• 🎵 Как **MP3** (аудио, 320 kbps)\n"
+        "• 🎬 Как **видео** (до 4K)\n\n"
+        "Пример: `https://www.youtube.com/watch?v=...`"
     )
+
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer(
-        "Как пользоваться ботом:\n"
-        "1. Скопируйте ссылку на видео с YouTube.\n"
-        "2. Вставьте её сюда и отправьте сообщением.\n"
-        "3. Бот скачает аудиодорожку, перекодирует в MP3 и пришлет вам файл.\n\n"
-        "🎧 *Обратите внимание*: Лимит Telegram на отправку файлов ботами составляет **50 МБ** "
-        "(это примерно 20 минут аудио в наивысшем качестве)."
+        "**Как пользоваться ботом:**\n"
+        "1. Скопируйте ссылку на YouTube видео.\n"
+        "2. Отправьте её боту.\n"
+        "3. Выберите формат: MP3 или видео (720p / 1080p / 4K).\n\n"
+        "⚠️ **Лимит Telegram:** файлы до **50 МБ**.\n"
+        "Для аудио это ~20 мин, для видео 1080p ~3-5 мин, для 4K — ещё меньше."
     )
 
-@dp.message(Command("cookies_status"))
-async def cmd_cookies_status(message: types.Message):
-    """Проверка статуса cookies."""
-    if config.COOKIES_PATH.exists():
-        size = config.COOKIES_PATH.stat().st_size
-        with open(config.COOKIES_PATH, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
-        data_lines = [l for l in lines if l.strip() and not l.startswith('#')]
-        await message.answer(
-            f"✅ Файл куки найден\n"
-            f"Путь: `{config.COOKIES_PATH}`\n"
-            f"Размер: {size} байт\n"
-            f"Всего строк: {len(lines)}\n"
-            f"Строк с данными: {len(data_lines)}\n"
-            f"Первая строка: `{lines[0].strip()[:80] if lines else 'пусто'}`"
-        )
-    else:
-        await message.answer(f"❌ Файл куки НЕ найден по пути: `{config.COOKIES_PATH}`")
-
-
-@dp.message(Command("cookies_check"))
-async def cmd_cookies_check(message: types.Message):
-    """Детальная проверка наличия ключевых куки."""
-    if not config.COOKIES_PATH.exists():
-        await message.answer("❌ Файл куки не найден.")
-        return
-    
-    with open(config.COOKIES_PATH, 'r', encoding='utf-8', errors='ignore') as f:
-        lines = f.readlines()
-    
-    # Ключевые куки для авторизации YouTube
-    required_cookies = ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', 'LOGIN_INFO', '__Secure-1PSID', '__Secure-3PSID']
-    found = []
-    all_cookie_names = []
-    
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        parts = line.split('\t')
-        if len(parts) >= 7:
-            cookie_name = parts[5]
-            all_cookie_names.append(cookie_name)
-            if cookie_name in required_cookies:
-                found.append(f"✅ {cookie_name}")
-    
-    missing = [f"❌ {c}" for c in required_cookies if c not in all_cookie_names]
-    
-    msg = f"📋 Диагностика куки ({len(all_cookie_names)} куки в файле):\n\n"
-    msg += "Ключевые куки авторизации:\n"
-    msg += "\n".join(found + missing)
-    msg += f"\n\nВсе имена куки в файле:\n`{', '.join(all_cookie_names)}`"
-    
-    if not found:
-        msg += "\n\n⚠️ НИ ОДНА ключевая кука авторизации не найдена! Вы НЕ были залогинены в Google/YouTube при экспорте куки."
-    elif len(found) < 4:
-        msg += "\n\n⚠️ Найдены не все ключевые куки. Попробуйте заново залогиниться в YouTube и экспортировать."
-    else:
-        msg += "\n\n✅ Куки авторизации выглядят полными."
-    
-    await message.answer(msg)
 
 @dp.message(F.text)
 async def handle_message(message: types.Message):
     url = message.text.strip()
-    
+
     if not YOUTUBE_REGEX.match(url):
         await message.answer(
             "❌ Это не похоже на ссылку YouTube.\n"
-            "Пожалуйста, отправьте корректную ссылку, например:\n"
-            "https://www.youtube.com/watch?v=dQw4w9XcQ"
+            "Отправьте корректную ссылку, например:\n"
+            "`https://www.youtube.com/watch?v=dQw4w9XcQ`"
         )
         return
 
-    status_msg = await message.answer("⏳ Скачиваю аудио с YouTube и конвертирую в MP3... Это может занять некоторое время.")
-    
-    audio_path = None
+    await message.answer(
+        "🎧 **Выберите формат скачивания:**",
+        reply_markup=get_format_keyboard(url),
+    )
+
+
+@dp.callback_query(F.data.startswith("dl:"))
+async def handle_download_callback(callback: types.CallbackQuery):
+    """Обработка нажатия кнопки выбора формата."""
+    await callback.answer()
+
+    parts = callback.data.split(":", 2)
+    if len(parts) < 3:
+        return
+    _, quality, url = parts
+
+    is_audio = quality == "audio"
+
+    if is_audio:
+        status_text = "⏳ Скачиваю аудио (MP3 320 kbps)..."
+    else:
+        status_text = f"⏳ Скачиваю видео ({quality}p)... Это может занять время."
+
+    status_msg = await callback.message.edit_text(status_text)
+
+    file_path = None
     try:
-        info = await download_youtube_audio(url)
-        audio_path = info['file_path']
-        
+        if is_audio:
+            info = await download_youtube_audio(url)
+        else:
+            info = await download_youtube_video(url, quality=quality)
+
+        file_path = info["file_path"]
         limit_bytes = 50 * 1024 * 1024
-        if info['file_size'] > limit_bytes:
+
+        if info["file_size"] > limit_bytes:
+            size_mb = round(info["file_size"] / 1024 / 1024, 1)
             await status_msg.edit_text(
-                "❌ Файл превышает лимит Telegram в 50 МБ.\n"
-                "Пожалуйста, выберите видео меньшей длины."
+                f"❌ Файл слишком большой: **{size_mb} МБ** (лимит Telegram: 50 МБ).\n\n"
+                "Попробуйте выбрать более низкое качество или более короткое видео."
             )
             return
 
-        await status_msg.edit_text("🎶 Отправляю MP3 в чат...")
-        
-        audio_file = FSInputFile(audio_path)
-        
-        await message.answer_audio(
-            audio=audio_file,
-            title=info['title'],
-            performer=info['artist'],
-            duration=info['duration'],
-            caption=f"🎶 **{info['title']}**\nКанал: {info['artist']}"
-        )
-        
-        await status_msg.delete()
-        
-    except Exception as e:
-        logger.error(f"Ошибка при обработке сообщения от {message.from_user.id}: {e}", exc_info=True)
-        err_str = str(e)
-        short_err = err_str[:500] if len(err_str) > 500 else err_str
-        
-        if "Sign in to confirm" in err_str or "cookies" in err_str.lower():
-            await status_msg.edit_text(
-                f"❌ YouTube потребовал авторизацию (антибот-защита).\n\n"
-                f"Куки файл: {'найден (' + str(config.COOKIES_PATH) + ')' if config.COOKIES_PATH.exists() else 'НЕ НАЙДЕН'}\n\n"
-                f"Детали ошибки:\n`{short_err}`"
+        title = info.get("title", "Unknown")
+        artist = info.get("artist", "Unknown")
+        caption = f"🎶 **{title}**\nКанал: {artist}"
+
+        await status_msg.edit_text("📤 Отправляю файл в чат...")
+
+        media_file = FSInputFile(file_path)
+
+        if is_audio or info.get("is_video") == False:
+            await callback.message.answer_audio(
+                audio=media_file,
+                title=title,
+                performer=artist,
+                duration=info.get("duration", 0),
+                caption=caption,
             )
         else:
-            await status_msg.edit_text(
-                f"❌ Ошибка при загрузке видео:\n\n`{short_err}`"
+            await callback.message.answer_document(
+                document=media_file,
+                caption=f"🎬 **{title}** ({quality}p)\nКанал: {artist}",
             )
+
+        await status_msg.delete()
+
+    except Exception as e:
+        logger.error(f"Ошибка: {e}", exc_info=True)
+        err_str = str(e)
+        short_err = err_str[:400] if len(err_str) > 400 else err_str
+
+        if "Sign in to confirm" in err_str:
+            await status_msg.edit_text("❌ YouTube заблокировал запрос. Попробуйте позже.")
+        elif "content" in err_str.lower() and ("block" in err_str.lower() or "claim" in err_str.lower()):
+            await status_msg.edit_text("❌ Это видео заблокировано правообладателем и недоступно для скачивания.")
+        else:
+            await status_msg.edit_text(f"❌ Ошибка:\n`{short_err}`")
     finally:
-        if audio_path and os.path.exists(audio_path):
+        if file_path and os.path.exists(file_path):
             try:
-                os.remove(audio_path)
-                logger.info(f"Временный файл удален: {audio_path}")
-            except Exception as clean_err:
-                logger.error(f"Не удалось удалить временный файл {audio_path}: {clean_err}")
+                os.remove(file_path)
+            except: pass
+
 
 async def handle_health_check(request):
-    return web.Response(text="OK - Bot is active")
+    return web.Response(text="OK")
 
 async def start_web_server():
     port = int(os.getenv("PORT", 8080))
@@ -206,11 +188,10 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info(f"Веб-сервер запущен на порту {port}")
+    logger.info(f"Веб-сервер на порту {port}")
 
 async def main():
     logger.info("Запуск Telegram-бота...")
-    logger.info(f"Cookies файл: {config.COOKIES_PATH} (существует: {config.COOKIES_PATH.exists()})")
     await start_web_server()
     await dp.start_polling(bot)
 

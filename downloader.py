@@ -4,8 +4,7 @@ import logging
 from pathlib import Path
 import shutil
 import uuid
-import os
-import json
+import re
 import aiohttp
 import yt_dlp
 import imageio_ffmpeg
@@ -15,9 +14,8 @@ from config import DOWNLOADS_DIR
 logger = logging.getLogger(__name__)
 
 # ==============================================================================
-# Способ 1: Cobalt API (основной, обходит блокировку YouTube на серверных IP)
+# Cobalt API инстансы (проверенные для YouTube, cobalt.directory 2026-07-21)
 # ==============================================================================
-# Проверенные рабочие инстансы для YouTube (cobalt.directory, обновлено 2026-07-21)
 COBALT_INSTANCES = [
     "https://api.cobalt.liubquanti.click",
     "https://nuko-c.meowing.de",
@@ -29,34 +27,71 @@ COBALT_INSTANCES = [
     "https://subito-c.meowing.de",
 ]
 
-async def _try_cobalt_download(url: str, unique_id: str) -> dict | None:
-    """Попытка скачать аудио через Cobalt API (перебирает несколько инстансов)."""
+
+# ==============================================================================
+# Метаданные: YouTube oEmbed API (работает без авторизации с любого IP)
+# ==============================================================================
+async def _get_metadata_oembed(url: str) -> tuple:
+    """Получить метаданные через YouTube oEmbed API (бесплатно, без авторизации)."""
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(oembed_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    title = data.get("title", "Unknown Title")
+                    artist = data.get("author_name", "Unknown Artist")
+                    logger.info(f"oEmbed метаданные: {title} - {artist}")
+                    return title, artist, 0  # oEmbed не возвращает duration
+                else:
+                    logger.warning(f"oEmbed: HTTP {resp.status}")
+    except Exception as e:
+        logger.warning(f"oEmbed ошибка: {e}")
+    return "Unknown Title", "Unknown Artist", 0
+
+
+# ==============================================================================
+# Cobalt API: скачивание аудио и видео
+# ==============================================================================
+async def _try_cobalt_download(url: str, unique_id: str, mode: str = "audio",
+                                video_quality: str = "1080") -> dict | None:
+    """
+    Скачивание через Cobalt API.
+    mode: "audio" или "auto" (видео)
+    video_quality: "max", "4320", "2160", "1440", "1080", "720", "480", "360"
+    """
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
-    payload = {
-        "url": url,
-        "downloadMode": "audio",
-        "audioFormat": "mp3",
-        "audioBitrate": "320",
-    }
+
+    if mode == "audio":
+        payload = {
+            "url": url,
+            "downloadMode": "audio",
+            "audioFormat": "mp3",
+            "audioBitrate": "320",
+        }
+        expected_ext = ".mp3"
+    else:
+        payload = {
+            "url": url,
+            "downloadMode": "auto",
+            "videoQuality": video_quality,
+            "youtubeVideoCodec": "h264",
+        }
+        expected_ext = ".mp4"
 
     for instance in COBALT_INSTANCES:
         try:
-            logger.info(f"Cobalt: пробуем {instance}...")
+            logger.info(f"Cobalt ({mode}): пробуем {instance}...")
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    instance,
-                    json=payload,
-                    headers=headers,
+                    instance, json=payload, headers=headers,
                     timeout=aiohttp.ClientTimeout(total=30),
                 ) as resp:
-                    if resp.status == 403:
-                        logger.warning(f"Cobalt {instance}: 403 Forbidden (требуется авторизация)")
-                        continue
-                    if resp.status == 429:
-                        logger.warning(f"Cobalt {instance}: 429 Too Many Requests")
+                    if resp.status in (403, 429):
+                        logger.warning(f"Cobalt {instance}: HTTP {resp.status}")
                         continue
                     if resp.status != 200:
                         logger.warning(f"Cobalt {instance}: HTTP {resp.status}")
@@ -67,93 +102,65 @@ async def _try_cobalt_download(url: str, unique_id: str) -> dict | None:
                     logger.info(f"Cobalt {instance}: status={status}")
 
                     if status == "error":
-                        error_info = data.get("error", {})
-                        logger.warning(f"Cobalt {instance}: ошибка: {error_info}")
+                        logger.warning(f"Cobalt {instance}: ошибка: {data.get('error')}")
                         continue
 
                     download_url = data.get("url")
-                    filename = data.get("filename", f"{unique_id}_audio.mp3")
+                    filename = data.get("filename", f"{unique_id}_media{expected_ext}")
 
                     if not download_url:
-                        logger.warning(f"Cobalt {instance}: нет URL для скачивания")
+                        logger.warning(f"Cobalt {instance}: нет URL")
                         continue
 
-                    # Скачиваем файл
-                    mp3_path = DOWNLOADS_DIR / f"{unique_id}_{filename}"
-                    if not str(mp3_path).endswith(".mp3"):
-                        mp3_path = mp3_path.with_suffix(".mp3")
+                    # Определяем расширение из filename
+                    if "." in filename:
+                        actual_ext = "." + filename.rsplit(".", 1)[-1]
+                    else:
+                        actual_ext = expected_ext
 
-                    logger.info(f"Cobalt: скачиваем файл -> {mp3_path}")
+                    out_path = DOWNLOADS_DIR / f"{unique_id}_{filename}"
+
+                    logger.info(f"Cobalt: скачиваем файл -> {out_path}")
                     async with session.get(
-                        download_url,
-                        timeout=aiohttp.ClientTimeout(total=300),
+                        download_url, timeout=aiohttp.ClientTimeout(total=600),
                     ) as file_resp:
                         if file_resp.status != 200:
-                            logger.warning(f"Cobalt: ошибка скачивания файла, HTTP {file_resp.status}")
+                            logger.warning(f"Cobalt: HTTP {file_resp.status} при скачивании")
                             continue
-
-                        with open(mp3_path, "wb") as f:
+                        with open(out_path, "wb") as f:
                             async for chunk in file_resp.content.iter_chunked(8192):
                                 f.write(chunk)
 
-                    if mp3_path.exists() and mp3_path.stat().st_size > 1000:
-                        title, artist, duration = await _get_metadata(url)
-                        logger.info(f"Cobalt: ✅ скачано ({mp3_path.stat().st_size} байт)")
+                    if out_path.exists() and out_path.stat().st_size > 1000:
+                        # Метаданные через oEmbed
+                        title, artist, duration = await _get_metadata_oembed(url)
+                        logger.info(f"Cobalt: ✅ скачано ({out_path.stat().st_size} байт)")
                         return {
-                            "file_path": str(mp3_path),
+                            "file_path": str(out_path),
                             "title": title,
                             "artist": artist,
                             "duration": duration,
-                            "file_size": mp3_path.stat().st_size,
+                            "file_size": out_path.stat().st_size,
+                            "is_video": mode != "audio",
                         }
                     else:
-                        logger.warning(f"Cobalt: файл пустой или слишком маленький")
-                        if mp3_path.exists():
-                            mp3_path.unlink()
+                        if out_path.exists():
+                            out_path.unlink()
                         continue
 
         except asyncio.TimeoutError:
             logger.warning(f"Cobalt {instance}: таймаут")
-            continue
         except Exception as e:
-            logger.warning(f"Cobalt {instance}: исключение: {e}")
-            continue
+            logger.warning(f"Cobalt {instance}: {e}")
 
-    logger.warning("Cobalt: ни один инстанс не сработал")
     return None
 
 
-async def _get_metadata(url: str) -> tuple:
-    """Получить метаданные видео через yt-dlp (без скачивания)."""
-    try:
-        loop = asyncio.get_running_loop()
-        def _extract():
-            ydl_opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "skip_download": True,
-                "extract_flat": False,
-            }
-            if config.COOKIES_PATH.exists():
-                ydl_opts["cookiefile"] = str(config.COOKIES_PATH)
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                title = info.get("title", "Unknown Title")
-                artist = info.get("artist") or info.get("uploader", "Unknown Artist")
-                duration = int(info.get("duration", 0))
-                return title, artist, duration
-        return await loop.run_in_executor(None, _extract)
-    except Exception as e:
-        logger.warning(f"Не удалось получить метаданные через yt-dlp: {e}")
-        return "Unknown Title", "Unknown Artist", 0
-
-
 # ==============================================================================
-# Способ 2: yt-dlp (запасной, работает с домашних IP или с валидными куки)
+# yt-dlp (запасной вариант)
 # ==============================================================================
 def _get_ydl_opts(outtmpl: str) -> dict:
     ffmpeg_path = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
-
     ydl_opts = {
         "format": "bestaudio/best",
         "ffmpeg_location": ffmpeg_path,
@@ -170,70 +177,76 @@ def _get_ydl_opts(outtmpl: str) -> dict:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         },
     }
-
     if config.COOKIES_PATH.exists():
         ydl_opts["cookiefile"] = str(config.COOKIES_PATH)
-
     return ydl_opts
 
 
 def _sync_download_ytdlp(url: str, unique_id: str) -> dict:
     outtmpl = str(DOWNLOADS_DIR / f"{unique_id}_%(title)s.%(ext)s")
     ydl_opts = _get_ydl_opts(outtmpl)
-
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         title = info.get("title", "Unknown Title")
         artist = info.get("artist") or info.get("uploader", "Unknown Artist")
         duration = int(info.get("duration", 0))
-
         mp3_file = None
         for p in DOWNLOADS_DIR.glob(f"{unique_id}_*.mp3"):
             mp3_file = p
             break
-
         if not mp3_file or not mp3_file.exists():
-            raise FileNotFoundError("MP3 файл не найден после конвертации.")
-
+            raise FileNotFoundError("MP3 файл не найден.")
         return {
             "file_path": str(mp3_file),
             "title": title,
             "artist": artist,
             "duration": duration,
             "file_size": mp3_file.stat().st_size,
+            "is_video": False,
         }
 
 
 # ==============================================================================
-# Основная функция: Cobalt -> yt-dlp
+# Основные функции
 # ==============================================================================
 async def download_youtube_audio(url: str) -> dict:
+    """Скачать аудио (MP3 320 kbps)."""
     unique_id = str(uuid.uuid4())[:8]
-    logger.info(f"Начинаем скачивание: {url}")
+    logger.info(f"Скачивание аудио: {url}")
 
-    # 1. Cobalt API
-    result = await _try_cobalt_download(url, unique_id)
+    result = await _try_cobalt_download(url, unique_id, mode="audio")
     if result:
-        logger.info("✅ Скачано через Cobalt API")
+        logger.info("✅ Аудио скачано через Cobalt API")
         return result
 
-    # 2. yt-dlp (запасной)
     logger.info("Cobalt не сработал, пробуем yt-dlp...")
     loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(None, _sync_download_ytdlp, url, unique_id)
-        logger.info("✅ Скачано через yt-dlp")
+        logger.info("✅ Аудио скачано через yt-dlp")
         return result
     except Exception as e:
-        logger.error(f"yt-dlp тоже не сработал: {e}", exc_info=True)
+        logger.error(f"yt-dlp: {e}", exc_info=True)
         raise e
 
 
+async def download_youtube_video(url: str, quality: str = "1080") -> dict:
+    """Скачать видео (MP4, указанное качество)."""
+    unique_id = str(uuid.uuid4())[:8]
+    logger.info(f"Скачивание видео ({quality}p): {url}")
+
+    result = await _try_cobalt_download(url, unique_id, mode="auto", video_quality=quality)
+    if result:
+        logger.info(f"✅ Видео ({quality}p) скачано через Cobalt API")
+        return result
+
+    raise Exception(f"Не удалось скачать видео в качестве {quality}p. Попробуйте выбрать более низкое качество.")
+
+
 # ==============================================================================
-# GUI версия (для десктопного приложения, использует yt-dlp напрямую)
+# GUI версия
 # ==============================================================================
 def download_audio_gui(url: str, output_path: str) -> dict:
-    """Синхронная функция для GUI. Использует yt-dlp напрямую (работает на домашнем IP)."""
     ffmpeg_path = shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
     temp_id = f"gui_temp_{uuid.uuid4().hex[:6]}_"
     out_dir = Path(output_path)
@@ -244,16 +257,8 @@ def download_audio_gui(url: str, output_path: str) -> dict:
         "ffmpeg_location": ffmpeg_path,
         "outtmpl": outtmpl,
         "noplaylist": True,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["ios", "android", "mweb", "web_creator"]
-            }
-        },
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "320",
-        }],
+        "extractor_args": {"youtube": {"player_client": ["ios", "android", "mweb", "web_creator"]}},
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "320"}],
         "quiet": True,
         "no_warnings": True,
     }
@@ -268,19 +273,15 @@ def download_audio_gui(url: str, output_path: str) -> dict:
         for p in out_dir.glob(f"{temp_id}*.mp3"):
             temp_file = p
             break
-
         if not temp_file or not temp_file.exists():
             raise FileNotFoundError("MP3 файл не найден.")
 
         clean_name = temp_file.name.replace(temp_id, "")
         final_file = out_dir / clean_name
-
         counter = 1
         while final_file.exists():
-            name_without_ext = Path(clean_name).stem
-            final_file = out_dir / f"{name_without_ext} ({counter}).mp3"
+            final_file = out_dir / f"{Path(clean_name).stem} ({counter}).mp3"
             counter += 1
-
         temp_file.rename(final_file)
 
         return {
