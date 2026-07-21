@@ -1,21 +1,23 @@
 FROM python:3.11-slim
 
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
-# Устанавливаем системные зависимости
+# РЈСЃС‚Р°РЅРѕРІРєР° СЃРёСЃС‚РµРјРЅС‹С… Р·Р°РІРёСЃРёРјРѕСЃС‚РµР№
 RUN apt-get update && apt-get install -y \
     gcc \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Копируем файл зависимостей и устанавливаем их
+# РљРѕРїРёСЂСѓРµРј С„Р°Р№Р»С‹ Р·Р°РІРёСЃРёРјРѕСЃС‚РµР№ Рё СѓСЃС‚Р°РЅР°РІР»РёРІР°РµРј РёС…
 COPY requirements_bot.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir --upgrade yt-dlp
 
-# Копируем исходный код бота
+# РљРѕРїРёСЂСѓРµРј РёСЃС…РѕРґРЅС‹Р№ РєРѕРґ
 COPY bot.py .
 COPY downloader.py .
 COPY config.py .
 
-# Запускаем бота
-CMD ["python", "bot.py"]
+# Р—Р°РїСѓСЃРє Р±РѕС‚Р°
+CMD ["python", "-u", "bot.py"]
